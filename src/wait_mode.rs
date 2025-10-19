@@ -101,3 +101,52 @@ fn print_timeout(entries: &[RegistryEntry]) {
         println!("- PID {} -> {}", entry.pid, entry.record.log_path);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::sync::Mutex;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    fn clear_env() {
+        unsafe {
+            env::remove_var(WAIT_INTERVAL_ENV);
+            env::remove_var(LEGACY_WAIT_INTERVAL_ENV);
+        }
+    }
+
+    #[test]
+    fn prefers_primary_interval_env() {
+        let _lock = ENV_GUARD.lock().unwrap();
+        clear_env();
+        unsafe {
+            env::set_var(WAIT_INTERVAL_ENV, "45");
+        }
+        assert_eq!(read_interval(), Duration::from_secs(45));
+        clear_env();
+    }
+
+    #[test]
+    fn falls_back_to_legacy_env() {
+        let _lock = ENV_GUARD.lock().unwrap();
+        clear_env();
+        unsafe {
+            env::set_var(LEGACY_WAIT_INTERVAL_ENV, "90");
+        }
+        assert_eq!(read_interval(), Duration::from_secs(90));
+        clear_env();
+    }
+
+    #[test]
+    fn returns_default_on_invalid_values() {
+        let _lock = ENV_GUARD.lock().unwrap();
+        clear_env();
+        unsafe {
+            env::set_var(WAIT_INTERVAL_ENV, "not-a-number");
+        }
+        assert_eq!(read_interval(), WAIT_INTERVAL_DEFAULT);
+        clear_env();
+    }
+}
