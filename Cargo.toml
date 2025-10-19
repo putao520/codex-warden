@@ -6,7 +6,7 @@ repository = "https://github.com/putao520/codex-warden"
 readme = "README.md"
 keywords = ["codex", "cli", "supervisor", "automation", "shared-memory"]
 categories = ["command-line-utilities", "development-tools"]
-version = "0.1.0"
+version = "0.2.1"
 edition = "2024"
 
 [dependencies]

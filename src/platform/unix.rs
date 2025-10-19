@@ -44,13 +44,13 @@ pub fn process_alive(pid: u32) -> bool {
     {
         let c_pid = pid as libc::pid_t;
         match unsafe_send_signal(c_pid, 0) {
-            Ok(_) => true,  // 信号发送成功，进程存在
-            Err(errno) => errno == libc::EPERM,  // EPERM表示进程存在但没有权限
+            Ok(_) => true,                      // 信号发送成功，进程存在
+            Err(errno) => errno == libc::EPERM, // EPERM表示进程存在但没有权限
         }
     }
     #[cfg(not(unix))]
     {
-        false  // 非Unix系统的后备实现
+        false // 非Unix系统的后备实现
     }
 }
 
@@ -134,7 +134,13 @@ fn get_last_errno() -> libc::c_int {
         unsafe { *libc::__error() }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd"
+    )))]
     {
         // 其他Unix系统的后备实现
         0

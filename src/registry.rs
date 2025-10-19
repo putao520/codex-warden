@@ -1,7 +1,7 @@
 use crate::config::{MAX_RECORD_AGE, SHARED_MEMORY_SIZE, SHARED_NAMESPACE};
 use crate::logging::{debug, warn};
 use crate::shared_map::{SharedMapError, open_or_create};
-use crate::task_record::TaskRecord;
+use crate::task_record::{TaskRecord, TaskStatus};
 use chrono::{DateTime, Duration, Utc};
 use shared_hashmap::SharedMemoryHashMap;
 use std::sync::Mutex;
@@ -68,6 +68,26 @@ impl TaskRegistry {
         })
     }
 
+    pub fn mark_completed(
+        &self,
+        pid: u32,
+        result: Option<String>,
+        exit_code: Option<i32>,
+        completed_at: DateTime<Utc>,
+    ) -> Result<(), RegistryError> {
+        let key = pid.to_string();
+        self.with_map(move |map| {
+            let existing = map
+                .get(&key)
+                .ok_or_else(|| RegistryError::Map(format!("no task found for pid {pid}")))?;
+            let record: TaskRecord = serde_json::from_str(&existing)?;
+            let updated_record = record.mark_completed(result, exit_code, completed_at);
+            let updated_value = serde_json::to_string(&updated_record)?;
+            let _ = map.insert(key.clone(), updated_value);
+            Ok(())
+        })
+    }
+
     pub fn remove(&self, pid: u32) -> Result<Option<TaskRecord>, RegistryError> {
         let key = pid.to_string();
         let removed = self.with_map(|map| Ok(map.remove(&key)))?;
@@ -75,6 +95,10 @@ impl TaskRegistry {
             Some(text) => Ok(Some(serde_json::from_str(&text)?)),
             None => Ok(None),
         }
+    }
+
+    pub fn remove_by_pid(&self, pid: u32) -> Result<Option<TaskRecord>, RegistryError> {
+        self.remove(pid)
     }
 
     pub fn entries(&self) -> Result<Vec<RegistryEntry>, RegistryError> {
@@ -107,6 +131,17 @@ impl TaskRegistry {
         }
 
         Ok(entries)
+    }
+
+    pub fn get_completed_unread_tasks(&self) -> Result<Vec<(u32, TaskRecord)>, RegistryError> {
+        let entries = self.entries()?;
+        Ok(entries
+            .into_iter()
+            .filter_map(|entry| {
+                (entry.record.status == TaskStatus::CompletedButUnread)
+                    .then_some((entry.pid, entry.record))
+            })
+            .collect())
     }
 
     pub fn sweep_stale_entries<F>(

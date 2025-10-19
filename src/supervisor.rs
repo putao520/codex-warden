@@ -4,7 +4,7 @@ use crate::platform::{self, ChildResources};
 use crate::registry::{RegistryError, TaskRegistry};
 use crate::signal;
 use crate::task_record::TaskRecord;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{self, BufWriter, Read, Write};
@@ -13,7 +13,6 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use thiserror::Error;
-use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
@@ -35,16 +34,7 @@ pub fn execute_codex(registry: &TaskRegistry, args: &[OsString]) -> Result<i32, 
     let should_register = args
         .first()
         .and_then(|arg| arg.to_str())
-        .map(|s| s.eq_ignore_ascii_case("exec"))
-        .unwrap_or(false);
-
-    let log_id = Uuid::new_v4().to_string();
-    let log_path = generate_log_path(&log_id)?;
-
-    let log_file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&log_path)?;
+        .is_some_and(|s| !s.eq_ignore_ascii_case("wait"));
 
     let mut command = Command::new(CODEX_BIN);
     command.args(args);
@@ -55,6 +45,30 @@ pub fn execute_codex(registry: &TaskRegistry, args: &[OsString]) -> Result<i32, 
 
     let mut child = command.spawn()?;
     let child_pid = child.id();
+
+    let log_path = match generate_log_path(child_pid) {
+        Ok(path) => path,
+        Err(err) => {
+            platform::terminate_process(child_pid);
+            let _ = child.wait();
+            return Err(err.into());
+        }
+    };
+
+    let log_file = match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log_path)
+    {
+        Ok(file) => file,
+        Err(err) => {
+            platform::terminate_process(child_pid);
+            let _ = child.wait();
+            return Err(err.into());
+        }
+    };
+
     debug(format!(
         "Started Codex process pid={} log={}",
         child_pid,
@@ -68,20 +82,19 @@ pub fn execute_codex(registry: &TaskRegistry, args: &[OsString]) -> Result<i32, 
     let mut copy_handles = Vec::new();
 
     if let Some(stdout) = child.stdout.take() {
-        copy_handles.push(spawn_copy(stdout, log_writer.clone()));
+        copy_handles.push(spawn_copy(stdout, log_writer.clone(), StreamMirror::Stdout));
     }
     if let Some(stderr) = child.stderr.take() {
-        copy_handles.push(spawn_copy(stderr, log_writer.clone()));
+        copy_handles.push(spawn_copy(stderr, log_writer.clone(), StreamMirror::Stderr));
     }
 
     let registration_guard = if should_register {
-        let record = TaskRecord {
-            started_at: Utc::now(),
-            log_id: log_id.clone(),
-            log_path: log_path.to_string_lossy().into_owned(),
-            manager_pid: Some(platform::current_pid()),
-            cleanup_reason: None,
-        };
+        let record = TaskRecord::new(
+            Utc::now(),
+            child_pid.to_string(),
+            log_path.to_string_lossy().into_owned(),
+            Some(platform::current_pid()),
+        );
         if let Err(err) = registry.register(child_pid, &record) {
             platform::terminate_process(child_pid);
             let _ = child.wait();
@@ -113,20 +126,51 @@ pub fn execute_codex(registry: &TaskRegistry, args: &[OsString]) -> Result<i32, 
     }
 
     if let Some(guard) = registration_guard {
-        let _ = guard.complete();
+        let completed_at = Utc::now();
+        let exit_code = status.code();
+        let result = match (status.success(), exit_code) {
+            (true, _) => Some("success".to_owned()),
+            (false, Some(code)) => Some(format!("failed_with_exit_code_{code}")),
+            (false, None) => Some("failed_without_exit_code".to_owned()),
+        };
+        let _ = guard.mark_completed(result, exit_code, completed_at);
     }
 
     Ok(extract_exit_code(status))
 }
 
-fn generate_log_path(log_id: &str) -> io::Result<PathBuf> {
+fn generate_log_path(pid: u32) -> io::Result<PathBuf> {
     let tmp = std::env::temp_dir();
-    Ok(tmp.join(format!("{log_id}.txt")))
+    Ok(tmp.join(format!("{pid}.log")))
+}
+
+#[derive(Copy, Clone)]
+enum StreamMirror {
+    Stdout,
+    Stderr,
+}
+
+impl StreamMirror {
+    fn write(self, data: &[u8]) -> io::Result<()> {
+        match self {
+            StreamMirror::Stdout => {
+                let mut handle = io::stdout().lock();
+                handle.write_all(data)?;
+                handle.flush()
+            }
+            StreamMirror::Stderr => {
+                let mut handle = io::stderr().lock();
+                handle.write_all(data)?;
+                handle.flush()
+            }
+        }
+    }
 }
 
 fn spawn_copy<R>(
     mut reader: R,
     writer: Arc<Mutex<BufWriter<std::fs::File>>>,
+    mirror: StreamMirror,
 ) -> thread::JoinHandle<io::Result<()>>
 where
     R: Read + Send + 'static,
@@ -138,11 +182,15 @@ where
             if read == 0 {
                 break;
             }
-            let mut guard = writer
-                .lock()
-                .map_err(|_| io::Error::other("Log writer lock poisoned"))?;
-            guard.write_all(&buffer[..read])?;
-            guard.flush()?;
+            let chunk = &buffer[..read];
+            {
+                let mut guard = writer
+                    .lock()
+                    .map_err(|_| io::Error::other("Log writer lock poisoned"))?;
+                guard.write_all(chunk)?;
+                guard.flush()?;
+            }
+            mirror.write(chunk)?;
         }
         Ok(())
     })
@@ -167,9 +215,15 @@ impl<'a> RegistrationGuard<'a> {
         }
     }
 
-    fn complete(mut self) -> Result<(), RegistryError> {
+    fn mark_completed(
+        mut self,
+        result: Option<String>,
+        exit_code: Option<i32>,
+        completed_at: DateTime<Utc>,
+    ) -> Result<(), RegistryError> {
         if self.active {
-            let _ = self.registry.remove(self.pid)?;
+            self.registry
+                .mark_completed(self.pid, result, exit_code, completed_at)?;
             self.active = false;
         }
         Ok(())
