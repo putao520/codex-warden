@@ -1,4 +1,6 @@
-use crate::config::{MAX_WAIT_DURATION, WAIT_INTERVAL_DEFAULT, WAIT_INTERVAL_ENV};
+use crate::config::{
+    LEGACY_WAIT_INTERVAL_ENV, MAX_WAIT_DURATION, WAIT_INTERVAL_DEFAULT, WAIT_INTERVAL_ENV,
+};
 use crate::logging::warn;
 use crate::platform;
 use crate::registry::{CleanupReason, RegistryEntry, RegistryError, TaskRegistry};
@@ -65,17 +67,23 @@ pub fn run() -> Result<(), WaitError> {
 }
 
 fn read_interval() -> Duration {
-    match std::env::var(WAIT_INTERVAL_ENV) {
+    read_env_interval(WAIT_INTERVAL_ENV)
+        .or_else(|| read_env_interval(LEGACY_WAIT_INTERVAL_ENV))
+        .unwrap_or(WAIT_INTERVAL_DEFAULT)
+}
+
+fn read_env_interval(var: &str) -> Option<Duration> {
+    match std::env::var(var) {
         Ok(raw) => match raw.parse::<u64>() {
-            Ok(seconds) if seconds > 0 => Duration::from_secs(seconds),
+            Ok(seconds) if seconds > 0 => Some(Duration::from_secs(seconds)),
             _ => {
                 warn(format!(
-                    "environment variable {WAIT_INTERVAL_ENV} invalid, using default 30s"
+                    "environment variable {var} invalid, using default 30s"
                 ));
-                WAIT_INTERVAL_DEFAULT
+                None
             }
         },
-        Err(_) => WAIT_INTERVAL_DEFAULT,
+        Err(_) => None,
     }
 }
 

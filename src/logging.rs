@@ -1,4 +1,4 @@
-use crate::config::DEBUG_ENV;
+use crate::config::{DEBUG_ENV, LEGACY_DEBUG_ENV};
 use std::env;
 use std::sync::OnceLock;
 
@@ -6,10 +6,16 @@ static DEBUG_ENABLED: OnceLock<bool> = OnceLock::new();
 
 fn enabled() -> bool {
     *DEBUG_ENABLED.get_or_init(|| {
-        env::var(DEBUG_ENV)
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        read_bool(DEBUG_ENV)
+            .or_else(|| read_bool(LEGACY_DEBUG_ENV))
             .unwrap_or(false)
     })
+}
+
+fn read_bool(var: &str) -> Option<bool> {
+    env::var(var)
+        .ok()
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
 pub fn debug(message: impl AsRef<str>) {

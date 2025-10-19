@@ -38,7 +38,7 @@
    - 行为必须兼容主流 Windows 与类 Unix 环境。
 7. **待命模式（`wait` 命令）**
    - 当 `codex-warden` 被调用为 `codex-warden wait`（无其他参数）时，不启动 Codex，仅进入阻塞轮询流程。
-   - 以固定间隔（默认 30 秒，可通过环境变量 `CODEX_WORKER_WAIT_INTERVAL_SEC` 覆盖）读取 `codex-task`。
+   - 以固定间隔（默认 30 秒，可通过环境变量 `CODEX_WARDEN_WAIT_INTERVAL_SEC` 覆盖）读取 `codex-task`。
      - 若共享表为空，则立即退出（退出码 `0`），同时汇总本轮监控期间正常完成的任务数量及其日志文件列表，并输出提示：
        ```
        当前有 N 个任务已完成，详见：
