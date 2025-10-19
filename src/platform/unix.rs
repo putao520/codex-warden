@@ -26,8 +26,7 @@ pub fn prepare_command(cmd: &mut Command) -> io::Result<()> {
 
 pub fn process_alive(pid: u32) -> bool {
     let pid = pid as pid_t;
-    unsafe { libc::kill(pid, 0) == 0 }
-    || last_errno() == libc::EPERM
+    (unsafe { libc::kill(pid, 0) == 0 }) || last_errno() == libc::EPERM
 }
 
 pub fn terminate_process(pid: u32) {
@@ -48,7 +47,7 @@ pub fn terminate_process(pid: u32) {
     }
 
     if send(pid, libc::SIGKILL) {
-        debug(format!("å?pid={} å‘é€?SIGKILL", pid));
+        debug(format!("pid={} sent SIGKILL", pid));
     }
 }
 
