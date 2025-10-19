@@ -48,7 +48,7 @@ pub fn terminate_process(pid: u32) {
     }
 
     if send(pid, libc::SIGKILL) {
-        debug(format!("向 pid={} 发送 SIGKILL", pid));
+        debug(format!("�?pid={} 发�?SIGKILL", pid));
     }
 }
 
